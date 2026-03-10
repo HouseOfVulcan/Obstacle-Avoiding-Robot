@@ -1,0 +1,56 @@
+/*
+ * temperature.c - TMP36 temperature sensor via ADC0
+ *
+ * PD3 = AIN4 (analog input, configured in port_init.c)
+ * ADC0 SS3, software trigger, 250 KSPS
+ *
+ * TMP36 transfer function:
+ *   Vout = 500mV + 10mV/°C  ->  T = (Vout_mV - 500) / 10
+ */
+
+#include "temperature.h"
+#include "bluetooth.h"
+#include "lcd.h"
+#include "timers.h"
+#include "tm4c123gh6pm.h"
+#include <stdio.h>
+
+/* ============================================================================
+ * ADC_Init - Configure ADC0 SS3 for single-channel software trigger on AIN4
+ * ============================================================================ */
+void ADC_Init(void) {
+    SYSCTL_RCGCADC_R |= 0x01;
+    while ((SYSCTL_PRADC_R & 0x01) == 0);
+
+    ADC0_ACTSS_R  &= ~0x08;             /* Disable SS3 during config         */
+    ADC0_EMUX_R   &= ~0xF000;           /* Software trigger for SS3          */
+    ADC0_SSMUX3_R  = 4;                 /* AIN4 = PD3                        */
+    ADC0_SSCTL3_R |=  0x06;             /* End of sequence, interrupt flag   */
+    ADC0_ACTSS_R  |=  0x08;             /* Enable SS3                        */
+    ADC0_PC_R      =  0x03;             /* 250 KSPS                          */
+}
+
+/* ============================================================================
+ * get_temp - Sample ADC, convert to degrees C, send via BT and update LCD
+ * ============================================================================ */
+void get_temp(void) {
+    static char buf[64];
+    static char lcd_buf[16];
+    float voltage, temp;
+
+    delay_ms(500);                      /* Settling delay                    */
+    ADC0_PSSI_R |= 0x08;                /* Start SS3 conversion              */
+    while ((ADC0_RIS_R & 0x08) == 0);   /* Wait for completion               */
+
+    uint32_t raw = ADC0_SSFIFO3_R & 0xFFF;
+    ADC0_ISC_R  |= 0x08;                /* Clear completion flag             */
+
+    voltage = (raw * 3300.0f) / 4095.0f;
+    temp    = (voltage - 500.0f) / 10.0f;
+
+    sprintf(buf, "Temp: %.1fC\n", temp);
+    write_string(buf);
+
+    sprintf(lcd_buf, "%.1f C", temp);
+    LCD_update("Temperature:", lcd_buf);
+}

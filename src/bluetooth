@@ -1,0 +1,100 @@
+/*
+ * bluetooth.c - HC-05 Bluetooth module via UART5 (PE4/PE5)
+ *
+ * UART5 = IRQ 61, NVIC EN1 bit 29
+ * Priority: level 1 (0x20) -> HIGH, preempts Timer4A (priority 2)
+ * Priority register: NVIC_PRI15_R, UART5 (IRQ61) in bits 15:13
+ */
+
+#include "bluetooth.h"
+#include "lcd.h"
+#include "servo.h"
+#include "ultrasonic.h"
+#include "temperature.h"
+#include "tm4c123gh6pm.h"
+#include <stdio.h>
+
+volatile int running = 1;           /* Shared ON/OFF flag with FSM           */
+
+/* ============================================================================
+ * UART5_Init - 9600 baud, 8N1, RX interrupt enabled, priority 1 (HIGH)
+ * ============================================================================ */
+void UART5_Init(void) {
+    SYSCTL_RCGCUART_R |= 0x20;
+    volatile unsigned long delay = SYSCTL_RCGC2_R;
+
+    UART5_CTL_R  = 0;
+    UART5_IBRD_R = 325;                 /* 9600 baud @ 50MHz                 */
+    UART5_FBRD_R = 34;
+    UART5_LCRH_R = 0x60;                /* 8N1                               */
+    UART5_CC_R   = 0;
+    UART5_CTL_R  = 0x301;               /* Enable UART, TX, RX               */
+
+    UART5_IM_R  |= (1 << 4);            /* Enable RX interrupt               */
+
+    NVIC_EN1_R  |= (1 << 29);           /* IRQ61 -> EN1 bit 29               */
+
+    /* NVIC_PRI15_R: IRQ60-63, UART5(IRQ61) priority in bits 15:13 */
+    NVIC_PRI15_R = (NVIC_PRI15_R & ~0x0000E000) | 0x00002000;
+}
+
+/* ============================================================================
+ * BT_Write - Blocking single-character transmit
+ * ============================================================================ */
+void BT_Write(char data) {
+    while ((UART5_FR_R & (1 << 5)) != 0);
+    UART5_DR_R = data;
+}
+
+/* ============================================================================
+ * write_string - Transmit null-terminated string over Bluetooth
+ * ============================================================================ */
+void write_string(char *str) {
+    while (*str) {
+        BT_Write(*str++);
+    }
+}
+
+/* ============================================================================
+ * UART5_Handler - HIGH priority ISR
+ * Handles: 'O' ON/OFF toggle, 'D' distance query, 'T' temperature query
+ * ============================================================================ */
+void UART5_Handler(void) {
+    if (UART5_RIS_R & (1 << 4)) {
+        char cmd = (char)UART5_DR_R;
+        static char buf[32];
+        uint16_t dist;
+
+        switch (cmd) {
+            case 'O':
+                running = !running;
+                if (running) {
+                    write_string("Vehicle ON\n");
+                    LCD_update("Vehicle", "ON");
+                } else {
+                    /* stop_motors() would create a circular dependency -    */
+                    /* caller (main) handles motor stop on running=0 check   */
+                    write_string("Vehicle OFF\n");
+                    LCD_update("Vehicle", "OFF");
+                }
+                break;
+
+            case 'D':
+                servo_to_angle(90);
+                dist = measure_distance();
+                sprintf(buf, "Dist: %d cm\n", dist);
+                write_string(buf);
+                LCD_update("Distance:", buf);
+                break;
+
+            case 'T':
+                get_temp();
+                break;
+
+            default:
+                break;
+        }
+
+        UART5_ICR_R |= (1 << 4);        /* Clear RX interrupt flag           */
+    }
+}

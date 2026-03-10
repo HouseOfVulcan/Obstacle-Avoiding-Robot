@@ -1,0 +1,92 @@
+/*
+ * lcd.c - HD44780-compatible 16x2 LCD driver (4-bit mode)
+ *
+ * Data:    PC4-PC7 (upper nibble of PORTC)
+ * Control: PD0=RS, PD1=RW, PD2=E
+ *
+ * 4-bit mode sends upper nibble first, then lower nibble.
+ * RW is held low (write-only); busy flag is not polled - fixed delays used.
+ */
+
+#include "lcd.h"
+#include "timers.h"
+#include "tm4c123gh6pm.h"
+
+/* LCD command constants */
+#define LCD_CLEAR        0x01
+#define LCD_HOME         0x02
+#define LCD_ENTRY_MODE   0x06
+#define LCD_CURSOR_OFF   0x0C
+#define LCD_4BIT_2LINE   0x28
+#define LCD_ROW1         0x80
+#define LCD_ROW2         0xC0
+
+/* ============================================================================
+ * LCD_write_nibble - Send one nibble with RS select
+ * data: upper nibble contains the 4 data bits
+ * rs:   0 = command, 1 = data
+ * ============================================================================ */
+static void LCD_write_nibble(unsigned char data, unsigned char rs) {
+    unsigned char nibble = (data & 0xF0) >> 4;
+    GPIO_PORTC_DATA_R = (GPIO_PORTC_DATA_R & 0x0F) | (nibble << 4);
+
+    GPIO_PORTD_DATA_R = (rs & 0x01);        /* RS, RW=0                      */
+    GPIO_PORTD_DATA_R |= 0x04;              /* E high                        */
+    delay_us(1);
+    GPIO_PORTD_DATA_R &= ~0x04;             /* E low (latch)                 */
+    delay_us(1);
+}
+
+/* ============================================================================
+ * LCD_Cmd - Send a command byte (RS=0), upper then lower nibble
+ * ============================================================================ */
+void LCD_Cmd(unsigned char cmd) {
+    LCD_write_nibble(cmd & 0xF0, 0);
+    LCD_write_nibble(cmd << 4,   0);
+    if (cmd < 4)
+        delay_ms(2);                        /* Clear/home need longer delay  */
+    else
+        delay_us(40);
+}
+
+/* ============================================================================
+ * LCD_write_char - Send a data byte (RS=1)
+ * ============================================================================ */
+void LCD_write_char(unsigned char data) {
+    LCD_write_nibble(data & 0xF0, 1);
+    LCD_write_nibble(data << 4,   1);
+    delay_us(40);
+}
+
+/* ============================================================================
+ * LCD_string - Write a null-terminated string to current cursor position
+ * ============================================================================ */
+void LCD_string(char *str) {
+    while (*str) {
+        LCD_write_char(*str++);
+    }
+}
+
+/* ============================================================================
+ * LCD_Init - Initialize LCD in 4-bit mode
+ * ============================================================================ */
+void LCD_Init(void) {
+    delay_ms(20);
+    LCD_Cmd(0x20);                          /* Force 4-bit mode              */
+    LCD_Cmd(LCD_4BIT_2LINE);
+    LCD_Cmd(LCD_ENTRY_MODE);
+    LCD_Cmd(LCD_CLEAR);
+    LCD_Cmd(LCD_CURSOR_OFF);
+}
+
+/* ============================================================================
+ * LCD_update - Clear display and write two lines
+ * ============================================================================ */
+void LCD_update(char *line1, char *line2) {
+    LCD_Cmd(LCD_CLEAR);
+    delay_ms(2);
+    LCD_Cmd(LCD_ROW1);
+    LCD_string(line1);
+    LCD_Cmd(LCD_ROW2);
+    LCD_string(line2);
+}

@@ -1,1 +1,79 @@
-src/
+/*
+ * main.c - Obstacle Avoiding Vehicle (TM4C123GH6PM)
+ *
+ * Initialization order matters:
+ *   1. GPIO ports (all peripherals depend on these)
+ *   2. Delay timers (Timer1A, Timer2A) - must be ready before any delay call
+ *   3. Timer3A (echo capture) - stabilize with 1s delay after init
+ *   4. LCD - needs stable delays
+ *   5. ADC
+ *   6. UART5/Bluetooth - sets HIGH priority interrupt
+ *   7. Timer4A - sets LOW priority interrupt (init after UART5 to finalize priorities)
+ *   8. PWM / Motors
+ *   9. Servo center + startup message
+ *
+ * Main loop:
+ *   - Calls obstacle_avoidance_fsm() on every iteration
+ *   - Handles 1-second heartbeat tick from Timer4A (green LED toggle)
+ */
+
+#include "port_init.h"
+#include "timers.h"
+#include "ultrasonic.h"
+#include "lcd.h"
+#include "temperature.h"
+#include "bluetooth.h"
+#include "motors.h"
+#include "servo.h"
+#include "fsm.h"
+#include "tm4c123gh6pm.h"
+
+int main(void) {
+    /* GPIO */
+    PortA_Init();
+    PortB_Init();
+    PortC_Init();
+    PortD_Init();
+    PortE_Init();
+    PortF_Init();
+
+    /* Delay timers must come first */
+    Timer1A_Init();
+    Timer2A_Init();
+
+    /* Echo capture - stabilize before first measurement */
+    Timer3A_Init();
+    delay_ms(1000);
+
+    /* LCD needs stable clocks */
+    LCD_Init();
+    delay_ms(1000);
+
+    /* ADC for temperature */
+    ADC_Init();
+    delay_ms(1000);
+
+    /* Bluetooth (HIGH priority interrupt) */
+    UART5_Init();
+
+    /* Heartbeat tick (LOW priority interrupt) - after UART5 so priorities settle */
+    Timer4A_Init();
+
+    /* Motor PWM */
+    PWM0_Init();
+
+    /* Center servo and signal ready */
+    servo_to_angle(90);
+    LCD_update("lil T", "Ready!");
+    write_string("System Ready. Send O to start/stop, D for distance, T for temp.\n");
+    delay_ms(500);
+
+    while (1) {
+        obstacle_avoidance_fsm();
+
+        if (tick_flag) {
+            tick_flag = 0;
+            GPIO_PORTF_DATA_R ^= 0x08;  /* Heartbeat: toggle green LED       */
+        }
+    }
+}

@@ -1,0 +1,98 @@
+/*
+ * motors.c - L298N dual H-bridge motor driver
+ *
+ * Direction encoding (PA2/PA3 = Motor A, PA5/PA6 = Motor B):
+ *   Forward:  PA2=1, PA3=0, PA5=1, PA6=0  -> mask 0x24
+ *   Backward: PA2=0, PA3=1, PA5=0, PA6=1  -> mask 0x48
+ *   Turn R:   PA2=0, PA3=1, PA5=1, PA6=0  -> mask 0x44 (A back, B fwd)
+ *   Turn L:   PA2=1, PA3=0, PA5=0, PA6=1  -> mask 0x28 (A fwd, B back)
+ *
+ * Motor direction pin mask: 0x6C = PA2|PA3|PA5|PA6
+ */
+
+#include "motors.h"
+#include "timers.h"
+#include "tm4c123gh6pm.h"
+
+#define DIR_MASK     0x6C   /* PA2, PA3, PA5, PA6                            */
+#define DIR_FORWARD  0x24
+#define DIR_BACKWARD 0x48
+#define DIR_TURN_R   0x44   /* Motor A backward, Motor B forward             */
+#define DIR_TURN_L   0x28   /* Motor A forward,  Motor B backward            */
+
+/* ============================================================================
+ * PWM0_Init - Configure M0PWM2 (PB4) and M0PWM3 (PB5) via PWM Generator 1
+ * PWM clock = system clock / 64 = ~781.25 kHz
+ * LOAD = 5000 -> PWM frequency ~156 Hz
+ * ============================================================================ */
+void PWM0_Init(void) {
+    SYSCTL_RCGCPWM_R |= 0x01;
+    while ((SYSCTL_PRPWM_R & 0x01) != 0x01);
+
+    SYSCTL_RCC_R &= ~0x000E0000;
+    SYSCTL_RCC_R |=  0x001E0000;            /* USEPWMDIV=1, PWMDIV=111 (/64) */
+
+    PWM0_1_CTL_R  = 0x00;                   /* Disable Gen 1 during config   */
+
+    PWM0_1_GENA_R = 0x8C;                   /* M0PWM2: high@reload, low@cmp  */
+    PWM0_1_GENB_R = 0x080C;                 /* M0PWM3: high@reload, low@cmp  */
+
+    PWM0_1_LOAD_R  = 5000;
+    PWM0_1_CMPA_R  = 5000;                  /* 0% duty (motor A off)         */
+    PWM0_1_CMPB_R  = 5000;                  /* 0% duty (motor B off)         */
+
+    PWM0_1_CTL_R   = 0x01;                  /* Enable Gen 1                  */
+    PWM0_ENABLE_R |= 0x0C;                  /* Enable M0PWM2 (bit2), M0PWM3  */
+}
+
+/* ============================================================================
+ * PWM_SetDuty - Set duty cycle for motor A (ch=2) or motor B (ch=3)
+ * duty_percent: 0 = off, 100 = full speed
+ * ============================================================================ */
+void PWM_SetDuty(uint8_t channel, uint8_t duty_percent) {
+    if (duty_percent > 100) duty_percent = 100;
+    uint32_t load = PWM0_1_LOAD_R;
+    uint32_t cmp  = ((100 - duty_percent) * load) / 100;
+
+    if (channel == 2) PWM0_1_CMPA_R = cmp;
+    if (channel == 3) PWM0_1_CMPB_R = cmp;
+}
+
+/* ============================================================================
+ * Motor control functions
+ * ============================================================================ */
+void stop_motors(void) {
+    GPIO_PORTA_DATA_R &= ~DIR_MASK;
+    PWM_SetDuty(2, 0);
+    PWM_SetDuty(3, 0);
+}
+
+void move_forward(uint32_t duration_ms) {
+    GPIO_PORTA_DATA_R = (GPIO_PORTA_DATA_R & ~DIR_MASK) | DIR_FORWARD;
+    PWM_SetDuty(2, 70);
+    PWM_SetDuty(3, 70);
+    delay_ms(duration_ms);
+}
+
+void move_backward(uint32_t duration_ms) {
+    GPIO_PORTA_DATA_R = (GPIO_PORTA_DATA_R & ~DIR_MASK) | DIR_BACKWARD;
+    PWM_SetDuty(2, 70);
+    PWM_SetDuty(3, 70);
+    delay_ms(duration_ms);
+}
+
+void turn_right(uint32_t duration_ms) {
+    GPIO_PORTA_DATA_R = (GPIO_PORTA_DATA_R & ~DIR_MASK) | DIR_TURN_R;
+    PWM_SetDuty(2, 60);
+    PWM_SetDuty(3, 60);
+    delay_ms(duration_ms);
+    stop_motors();
+}
+
+void turn_left(uint32_t duration_ms) {
+    GPIO_PORTA_DATA_R = (GPIO_PORTA_DATA_R & ~DIR_MASK) | DIR_TURN_L;
+    PWM_SetDuty(2, 60);
+    PWM_SetDuty(3, 60);
+    delay_ms(duration_ms);
+    stop_motors();
+}

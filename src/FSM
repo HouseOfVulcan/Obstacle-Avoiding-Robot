@@ -1,0 +1,155 @@
+/*
+ * fsm.c - Obstacle avoidance finite state machine
+ *
+ * Each call to obstacle_avoidance_fsm() advances the FSM by one state.
+ * The main loop calls this repeatedly; no blocking occurs at the FSM level
+ * beyond what the servo/motor/sensor functions themselves block.
+ *
+ * State transitions:
+ *   SCAN_* states: measure distance, transition to PATH_CLEAR or next scan
+ *   PATH_CLEAR:    execute move, return to SCAN_FRONT
+ *   ALL_BLOCKED:   spin 180 in place, return to SCAN_FRONT
+ */
+
+#include "fsm.h"
+#include "bluetooth.h"
+#include "lcd.h"
+#include "motors.h"
+#include "servo.h"
+#include "ultrasonic.h"
+#include "tm4c123gh6pm.h"
+#include <string.h>
+#include <stdio.h>
+
+typedef enum {
+    SCAN_FRONT,
+    SCAN_RIGHT45,
+    SCAN_LEFT45,
+    SCAN_RIGHT90,
+    SCAN_LEFT90,
+    PATH_CLEAR,
+    ALL_BLOCKED
+} State_t;
+
+#define CLEAR_DISTANCE 10   /* cm - minimum distance to consider path clear  */
+
+static State_t fsm_state      = SCAN_FRONT;
+static char    direction_str[16] = "Scanning...";
+
+/* ============================================================================
+ * obstacle_avoidance_fsm - Call from main loop; advances FSM one step
+ * ============================================================================ */
+void obstacle_avoidance_fsm(void) {
+    static char lcd1[16], bt_buf[64];
+    uint16_t dist;
+
+    if (!running) return;               /* Vehicle OFF - do nothing          */
+
+    switch (fsm_state) {
+
+        case SCAN_FRONT:
+            servo_to_angle(90);
+            dist = measure_distance();
+            sprintf(lcd1, "Front: %d cm", dist);
+            if (dist > CLEAR_DISTANCE) {
+                fsm_state = PATH_CLEAR;
+                strcpy(direction_str, "Forward");
+                LCD_update(lcd1, "Path clear");
+                sprintf(bt_buf, "Front: %d cm - Clear\n", dist);
+            } else {
+                fsm_state = SCAN_RIGHT45;
+                LCD_update(lcd1, "Blocked->R45");
+                sprintf(bt_buf, "Front: %d cm - Blocked, checking R45\n", dist);
+            }
+            write_string(bt_buf);
+            break;
+
+        case SCAN_RIGHT45:
+            servo_to_angle(45);
+            dist = measure_distance();
+            sprintf(lcd1, "R45: %d cm", dist);
+            if (dist > CLEAR_DISTANCE) {
+                fsm_state = PATH_CLEAR;
+                strcpy(direction_str, "Right 45");
+                LCD_update(lcd1, "Turning R45");
+                sprintf(bt_buf, "R45: %d cm - Clear\n", dist);
+            } else {
+                fsm_state = SCAN_LEFT45;
+                LCD_update(lcd1, "Blocked->L45");
+                sprintf(bt_buf, "R45: %d cm - Blocked, checking L45\n", dist);
+            }
+            write_string(bt_buf);
+            break;
+
+        case SCAN_LEFT45:
+            servo_to_angle(135);
+            dist = measure_distance();
+            sprintf(lcd1, "L45: %d cm", dist);
+            if (dist > CLEAR_DISTANCE) {
+                fsm_state = PATH_CLEAR;
+                strcpy(direction_str, "Left 45");
+                LCD_update(lcd1, "Turning L45");
+                sprintf(bt_buf, "L45: %d cm - Clear\n", dist);
+            } else {
+                fsm_state = SCAN_RIGHT90;
+                LCD_update(lcd1, "Blocked->R90");
+                sprintf(bt_buf, "L45: %d cm - Blocked, checking R90\n", dist);
+            }
+            write_string(bt_buf);
+            break;
+
+        case SCAN_RIGHT90:
+            servo_to_angle(0);
+            dist = measure_distance();
+            sprintf(lcd1, "R90: %d cm", dist);
+            if (dist > CLEAR_DISTANCE) {
+                fsm_state = PATH_CLEAR;
+                strcpy(direction_str, "Right 90");
+                LCD_update(lcd1, "Turning R90");
+                sprintf(bt_buf, "R90: %d cm - Clear\n", dist);
+            } else {
+                fsm_state = SCAN_LEFT90;
+                LCD_update(lcd1, "Blocked->L90");
+                sprintf(bt_buf, "R90: %d cm - Blocked, checking L90\n", dist);
+            }
+            write_string(bt_buf);
+            break;
+
+        case SCAN_LEFT90:
+            servo_to_angle(180);
+            dist = measure_distance();
+            sprintf(lcd1, "L90: %d cm", dist);
+            if (dist > CLEAR_DISTANCE) {
+                fsm_state = PATH_CLEAR;
+                strcpy(direction_str, "Left 90");
+                LCD_update(lcd1, "Turning L90");
+                sprintf(bt_buf, "L90: %d cm - Clear\n", dist);
+            } else {
+                fsm_state = ALL_BLOCKED;
+                LCD_update("All blocked!", "Reversing...");
+                write_string("All blocked - reversing 0.5m\n");
+            }
+            write_string(bt_buf);
+            break;
+
+        case PATH_CLEAR:
+            if      (strcmp(direction_str, "Forward")  == 0) move_forward(500);
+            else if (strcmp(direction_str, "Right 45") == 0) { turn_right(550);  move_forward(300); }
+            else if (strcmp(direction_str, "Left 45")  == 0) { turn_left(550);   move_forward(300); }
+            else if (strcmp(direction_str, "Right 90") == 0) { turn_right(1100); move_forward(300); }
+            else if (strcmp(direction_str, "Left 90")  == 0) { turn_left(1100);  move_forward(300); }
+
+            stop_motors();
+            servo_to_angle(90);
+            fsm_state = SCAN_FRONT;
+            break;
+
+        case ALL_BLOCKED:
+            turn_right(2200);           /* ~180 degree spin in place         */
+            stop_motors();
+            write_string("180 spin - re-scanning\n");
+            LCD_update("All blocked!", "Spinning 180");
+            fsm_state = SCAN_FRONT;
+            break;
+    }
+}

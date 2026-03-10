@@ -1,0 +1,76 @@
+/*
+ * ultrasonic.c - HC-SR04 ultrasonic distance sensor driver
+ *
+ * Trigger: PB3 (GPIO output)
+ * Echo:    PB2 (T3CCP0, Timer3A input capture)
+ *
+ * Timer3A: 16-bit, edge-time capture, both edges, prescaler=49 -> 1us/tick
+ * Distance = pulse_width / 2500  (tuned divisor verified on hardware)
+ */
+
+#include "ultrasonic.h"
+#include "timers.h"
+#include "tm4c123gh6pm.h"
+
+/* ============================================================================
+ * Timer3A Init - Ultrasonic echo input capture (PB2 / T3CCP0)
+ * Up-count, captures both edges, 1us resolution via prescaler
+ * ============================================================================ */
+void Timer3A_Init(void) {
+    SYSCTL_RCGCTIMER_R |= 0x08;
+    TIMER3_CTL_R  = 0x00;
+    TIMER3_CFG_R  = 0x04;               /* 16-bit mode                       */
+    TIMER3_TAMR_R = 0x17;               /* Capture, edge-time, up-count      */
+    TIMER3_TAPR_R = 49;                 /* Prescaler: 1us ticks @ 50MHz      */
+    TIMER3_CTL_R  = 0x0C;               /* Capture both edges                */
+    TIMER3_CTL_R |= 0x01;               /* Enable Timer3A                    */
+    TIMER3_ICR_R  = 0x04;               /* Clear capture flag                */
+    delay_us(10);
+}
+
+/* ============================================================================
+ * sensor_trigger - Send 10us trigger pulse on PB3
+ * ============================================================================ */
+void sensor_trigger(void) {
+    GPIO_PORTB_DATA_R &= ~0x08;         /* PB3 low                           */
+    delay_us(2);
+    GPIO_PORTB_DATA_R |=  0x08;         /* PB3 high 10us                     */
+    delay_us(10);
+    GPIO_PORTB_DATA_R &= ~0x08;         /* PB3 low                           */
+}
+
+/* ============================================================================
+ * measure_distance - Trigger sensor, capture echo, return distance in cm
+ * Returns 0 on timeout (no echo received within ~60ms)
+ * ============================================================================ */
+uint16_t measure_distance(void) {
+    uint32_t start_time, end_time, pulse_width;
+    uint32_t timeout = 60000;
+
+    TIMER3_ICR_R = 0x04;                /* Clear capture flag                */
+    sensor_trigger();
+
+    /* Wait for rising edge with timeout */
+    while ((TIMER3_RIS_R & 0x04) == 0) {
+        if (--timeout == 0) return 0;
+    }
+    start_time = TIMER3_TAR_R;
+    TIMER3_ICR_R = 0x04;
+
+    timeout = 60000;
+
+    /* Wait for falling edge with timeout */
+    while ((TIMER3_RIS_R & 0x04) == 0) {
+        if (--timeout == 0) return 0;
+    }
+    end_time = TIMER3_TAR_R;
+    TIMER3_ICR_R = 0x04;
+
+    /* Handle 16-bit timer rollover */
+    if (end_time >= start_time)
+        pulse_width = end_time - start_time;
+    else
+        pulse_width = (0xFFFF - start_time) + end_time;
+
+    return (uint16_t)(pulse_width / 2500); /* Tuned divisor from hardware test */
+}

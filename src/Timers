@@ -1,0 +1,91 @@
+/*
+ * timers.c - Delay timers (Timer1A, Timer2A) and periodic tick (Timer4A)
+ *
+ * Timer1A: 32-bit periodic, LOAD=49999 -> 1ms @ 50MHz
+ * Timer2A: 32-bit periodic, LOAD=49    -> 1us @ 50MHz
+ * Timer4A: 32-bit periodic, LOAD=49999999 -> 1s @ 50MHz
+ *          IRQ 70, NVIC EN2 bit 6, priority 2 (LOW) = 0x40
+ */
+
+#include "timers.h"
+#include "tm4c123gh6pm.h"
+
+volatile int tick_flag = 0;
+
+/* ============================================================================
+ * Timer1A_Init - 1ms polling delay timer
+ * ============================================================================ */
+void Timer1A_Init(void) {
+    SYSCTL_RCGCTIMER_R |= 0x02;
+    TIMER1_CTL_R   = 0x00;
+    TIMER1_CFG_R   = 0x00;              /* 32-bit mode                       */
+    TIMER1_TAMR_R  = 0x02;              /* Periodic countdown                */
+    TIMER1_TAILR_R = 50000 - 1;         /* 1ms at 50MHz                      */
+    TIMER1_TAPR_R  = 0;
+    TIMER1_ICR_R   = 0x01;
+    TIMER1_CTL_R   = 0x01;
+}
+
+/* ============================================================================
+ * Timer2A_Init - 1us polling delay timer
+ * ============================================================================ */
+void Timer2A_Init(void) {
+    SYSCTL_RCGCTIMER_R |= 0x04;
+    TIMER2_CTL_R   = 0x00;
+    TIMER2_CFG_R   = 0x00;
+    TIMER2_TAMR_R  = 0x02;
+    TIMER2_TAILR_R = 50 - 1;            /* 1us at 50MHz                      */
+    TIMER2_TAPR_R  = 0;
+    TIMER2_ICR_R   = 0x01;
+    TIMER2_CTL_R   = 0x01;
+}
+
+/* ============================================================================
+ * Timer4A_Init - 1-second periodic interrupt, LOW priority (level 2)
+ * IRQ 70 -> NVIC EN2 bit 6
+ * NVIC_PRI17_R: IRQ 68-71, Timer4A (IRQ70) priority in bits 23:21
+ * ============================================================================ */
+void Timer4A_Init(void) {
+    SYSCTL_RCGCTIMER_R |= 0x10;
+    TIMER4_CTL_R   = 0x00;
+    TIMER4_CFG_R   = 0x00;
+    TIMER4_TAMR_R  = 0x02;
+    TIMER4_TAILR_R = 50000000 - 1;      /* 1 second at 50MHz                 */
+    TIMER4_TAPR_R  = 0;
+    TIMER4_ICR_R   = 0x01;
+    TIMER4_IMR_R  |= 0x01;
+
+    NVIC_EN2_R    |= (1 << 6);
+    NVIC_PRI17_R   = (NVIC_PRI17_R & ~0x00E00000) | 0x00400000;
+
+    TIMER4_CTL_R  |= 0x01;
+}
+
+/* ============================================================================
+ * delay_ms - Block for the given number of milliseconds
+ * ============================================================================ */
+void delay_ms(uint32_t ms) {
+    for (uint32_t i = 0; i < ms; i++) {
+        TIMER1_ICR_R = 0x01;
+        while ((TIMER1_RIS_R & 0x01) == 0);
+    }
+}
+
+/* ============================================================================
+ * delay_us - Block for the given number of microseconds
+ * ============================================================================ */
+void delay_us(uint32_t us) {
+    for (uint32_t i = 0; i < us; i++) {
+        TIMER2_ICR_R = 0x01;
+        while ((TIMER2_RIS_R & 0x01) == 0);
+    }
+}
+
+/* ============================================================================
+ * TIMER4A_Handler - LOW priority ISR, fires every second
+ * Sets tick_flag; main loop handles the actual work to keep ISR short
+ * ============================================================================ */
+void TIMER4A_Handler(void) {
+    TIMER4_ICR_R = 0x01;
+    tick_flag    = 1;
+}

@@ -1,0 +1,44 @@
+/*
+ * servo.c - Hobby servo driver (bit-bang PWM on PA4)
+ *
+ * PA4 is configured as GPIO output in port_init.c.
+ * No hardware PWM module is used — pulse is manually timed with delay_us().
+ *
+ * Pulse width formula: pw = 500 + (angle * 1850) / 180  (in microseconds)
+ */
+
+#include "servo.h"
+#include "timers.h"
+#include "tm4c123gh6pm.h"
+
+static uint32_t curr_pulse_width = 1425;    /* Default: 90 degrees center    */
+
+/* ============================================================================
+ * servo_set_angle - Compute and store pulse width for a given angle
+ * ============================================================================ */
+void servo_set_angle(uint16_t angle) {
+    if (angle > 180) angle = 180;
+    curr_pulse_width = 500 + ((angle * 1850) / 180);
+}
+
+/* ============================================================================
+ * servo_generate_pulse - Output one 20ms PWM pulse on PA4
+ * ============================================================================ */
+void servo_generate_pulse(void) {
+    GPIO_PORTA_DATA_R |=  0x10;             /* PA4 high                      */
+    delay_us(curr_pulse_width);
+    GPIO_PORTA_DATA_R &= ~0x10;             /* PA4 low                       */
+    delay_us(20000 - curr_pulse_width);     /* Complete the 20ms period      */
+}
+
+/* ============================================================================
+ * servo_to_angle - Move servo to angle and block until settled (~1 second)
+ * Sends 50 pulses @ 20ms each = 1 second, then 100ms additional settle delay
+ * ============================================================================ */
+void servo_to_angle(uint16_t angle) {
+    servo_set_angle(angle);
+    for (int i = 0; i < 50; i++) {
+        servo_generate_pulse();
+    }
+    delay_ms(100);
+}
